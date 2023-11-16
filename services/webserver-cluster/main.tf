@@ -1,4 +1,5 @@
 
+# Define an  AWS launch configuration 
 resource "aws_launch_configuration" "example" {
   image_id        = var.ami
   instance_type   = var.instance_type
@@ -15,6 +16,7 @@ resource "aws_launch_configuration" "example" {
                 #EOF
 
   # Render user data script as a template
+  # Creates HTML file and starts web server using BusyBox
   user_data     = templatefile("${path.module}/user-data.sh", {
     server_port = var.server_port
     db_address  = data.terraform_remote_state.db.outputs.address
@@ -29,9 +31,9 @@ resource "aws_launch_configuration" "example" {
   }
 }
 
-# run between 2 and 10 instances each tagged with tag name(referenced)
+# run between 2 and 10 instances each tagged with tag name
 resource "aws_autoscaling_group" "example" {
-  # Depend on launch config's name so each time its replaced, this 
+  # concatenate to depend on launch config's name so each time its replaced, this 
   # ASG is also replaced 
   name = "${var.cluster_name}-${aws_launch_configuration.example.name}"
 
@@ -57,12 +59,15 @@ resource "aws_autoscaling_group" "example" {
     create_before_destroy = true
   }
 
+  # Tags for instances created by the ASG
   tag {
     key                 = "Name"
     value               = var.cluster_name
     propagate_at_launch = true
   }
 
+  # Create dynamic tags based on custom_tags input variable
+  # Create multiple tags dynamically based on map/list of values
   dynamic "tag" {
     for_each = {
       for key, value in var.custom_tags:
@@ -78,13 +83,14 @@ resource "aws_autoscaling_group" "example" {
   }
 }
 
+# Create schedules to scale the ASG in and out
 resource "aws_autoscaling_schedule" "scale_out_during_business_hours" {
   count = var.enable_autoscaling ? 1 : 0
 
   scheduled_action_name  = "${var.cluster_name}-scale-out-during-business-hours"
   min_size               = 2
-  max_size               = 10
-  desired_capacity       = 10
+  max_size               = 2
+  desired_capacity       = 2
   recurrence             = "0 9 * * *"
   autoscaling_group_name = aws_autoscaling_group.example.name
 }
@@ -94,17 +100,19 @@ resource "aws_autoscaling_schedule" "scale_in_at_night" {
 
   scheduled_action_name  = "${var.cluster_name}-scale-in-at-night"
   min_size               = 2
-  max_size               = 10
+  max_size               = 2
   desired_capacity       = 2
   recurrence             = "0 17 * * *"
   autoscaling_group_name = aws_autoscaling_group.example.name
 }
 
 
+# Define as AWS Security Group for instances 
 resource "aws_security_group" "instance" {
   name = "${var.cluster_name}-instance"
 }
 
+# Define a rule to allow inbound HTTP traffic to Security Group
 resource "aws_security_group_rule" "allow_server_http_inbound" {
   type              = "ingress"
   security_group_id = aws_security_group.instance.id
@@ -116,7 +124,7 @@ resource "aws_security_group_rule" "allow_server_http_inbound" {
 }
 
 
-# Data
+# Define data sources to retrieve information about VPC and subnets
 data "aws_vpc" "default" {
   default = true
 }
@@ -128,7 +136,7 @@ data "aws_subnets" "default" {
   }
 }
 
-#create ALB
+# Create an AWS application load balancer
 resource "aws_lb" "example" {
   name               = var.cluster_name
   load_balancer_type = "application"
@@ -136,7 +144,7 @@ resource "aws_lb" "example" {
   security_groups    = [aws_security_group.alb.id]
 }
 
-#define listener 
+# Define listener for ALB
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.example.arn
   port              = local.http_port
@@ -155,14 +163,15 @@ resource "aws_lb_listener" "http" {
 }
 
 
-#create target group for ASG
+# Create target group for ASG
 resource "aws_lb_target_group" "asg" {
   name     = var.cluster_name
   port     = var.server_port
   protocol = "HTTP"
   vpc_id   = data.aws_vpc.default.id
 
-  #check instances periodically sending HTTP request to each instance to match configured matcher 
+  # Check instances periodically sending HTTP request to each instance to match configured matcher 
+  # Configure health checks for instances in target group
   health_check {
     path                = "/"
     protocol            = "HTTP"
@@ -192,10 +201,12 @@ resource "aws_lb_listener_rule" "asg" {
   }
 }
 
+# Define security group for ALB
 resource "aws_security_group" "alb" {
   name = "${var.cluster_name}-alb"
 }
 
+# Define rules to allow inbound HTTP traffic and all outbound traffic for security group
 resource "aws_security_group_rule" "allow_http_inbound" {
   type              = "ingress"
   security_group_id = aws_security_group.alb.id
@@ -216,8 +227,7 @@ resource "aws_security_group_rule" "allow_all_outbound" {
   cidr_blocks       = local.all_ips
 }
 
-
-
+# Define data source to retrieve information from remote terraform state file
 data "terraform_remote_state" "db" {
     backend = "s3"
 
@@ -228,9 +238,8 @@ data "terraform_remote_state" "db" {
     }
 }
 
-
-# local values in locals block instead of input variables
-locals {
+# Local values in locals block instead of input variables for commonly used constants
+ locals {
   http_port = 80
   any_port = 0
   any_protocol = "-1"
